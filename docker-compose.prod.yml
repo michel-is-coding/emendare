@@ -1,0 +1,146 @@
+# Déploiement derrière un Traefik existant.
+# Prérequis : un Traefik qui tourne sur l'hôte, attaché au réseau externe ${TRAEFIK_NETWORK},
+# avec un entrypoint `https` et un certresolver `letsencrypt`.
+#
+# Usage :
+#   cp .env.prod.example .env.prod   # puis remplir
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_HOST}
+      labels:
+        - project=emendare
+    restart: always
+    networks:
+      - proxy
+    expose:
+      - "3000"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-proxy}
+      - traefik.http.routers.emendare-web.rule=Host(`${WEB_HOST}`)
+      - traefik.http.routers.emendare-web.entrypoints=https
+      - traefik.http.routers.emendare-web.tls=true
+      - traefik.http.routers.emendare-web.tls.certresolver=letsencrypt
+      - traefik.http.services.emendare-web.loadbalancer.server.port=3000
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      labels:
+        - project=emendare
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/emendare?schema=public
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: https://${WEB_HOST}
+      PORT: "4000"
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://openrouter.ai/api/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-openai/text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      # Ingestion — droit consolidé Légifrance (dumps DILA locaux, cf. decisions #0011).
+      # Les dumps téléchargés/extraits persistent dans le volume api_data (déclaré plus bas) :
+      # sans lui, le fond LEGI (~Go) serait re-téléchargé à chaque --force-recreate du déploiement.
+      DATA_DIR: /app/data
+      LEGIFRANCE_LEGI_URL: ${LEGIFRANCE_LEGI_URL:-}
+      LEGIFRANCE_JORF_URL: ${LEGIFRANCE_JORF_URL:-}
+      # Optionnels (defaults sûrs dans le code si absents) — tunables via .env.prod sans rebuild.
+      INGESTION_CRON: ${INGESTION_CRON:-0 3 * * 0}
+      AN_LEGISLATURES: ${AN_LEGISLATURES:-17}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - proxy
+      - internal
+    expose:
+      - "4000"
+    volumes:
+      # Dumps open data (AN + DILA LEGI/JORF) — persistants entre déploiements.
+      - api_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-proxy}
+      - traefik.http.routers.emendare-api.rule=Host(`${API_HOST}`)
+      - traefik.http.routers.emendare-api.entrypoints=https
+      - traefik.http.routers.emendare-api.tls=true
+      - traefik.http.routers.emendare-api.tls.certresolver=letsencrypt
+      - traefik.http.services.emendare-api.loadbalancer.server.port=4000
+
+  # One-off : applique les migrations Prisma avant le démarrage de l'api
+  # (réutilise le stage `build` du Dockerfile api, qui contient le CLI prisma).
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+      labels:
+        - project=emendare
+    command: ["pnpm", "--filter", "api", "exec", "prisma", "migrate", "deploy"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/emendare?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: always
+    environment:
+      POSTGRES_DB: emendare
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d emendare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    volumes:
+      - redis_data:/data
+
+networks:
+  # Réseau externe du Traefik de l'hôte
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-proxy}
+  # Réseau privé : postgres et redis ne sont jamais exposés à Traefik ni à l'hôte
+  internal:
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_data:

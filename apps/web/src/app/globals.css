@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Couleurs & typo = tokens DSFR (Marianne servie par react-dsfr) — pas d'override ici. */
+html {
+  scroll-behavior: smooth;
+}

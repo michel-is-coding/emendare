@@ -1,0 +1,24 @@
+{
+  "name": "emendare",
+  "version": "1.0.0",
+  "description": "Emendare monorepo for parliamentary amendment analysis",
+  "scripts": {
+    "dev": "pnpm --parallel --filter web --filter api dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm --filter api dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f",
+    "prisma:generate": "pnpm --filter api prisma generate",
+    "prisma:migrate": "pnpm --filter api prisma migrate dev",
+    "prisma:studio": "pnpm --filter api prisma studio"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": true,
+  "packageManager": "pnpm@10.32.1"
+}

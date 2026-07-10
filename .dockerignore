@@ -1,0 +1,11 @@
+.git
+.gitea
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/generated
+.env
+.env.*
+*.md

@@ -1,0 +1,257 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Texte législatif à DEUX niveaux (cf. cas PLFSS) :
+//  - kind=BILL         : le texte EN NAVETTE (projet/proposition), source open data AN.
+//                        Pas (encore) dans Légifrance ; porte sa nature (PLF/PLFSS/…) et ses versions.
+//  - kind=CONSOLIDATED : le droit EN VIGUEUR / la LFSS de l'année N-1 (Légifrance, dumps DILA locaux).
+// Un amendement pointe son BILL (lawText) ; les renvois vers le consolidé passent par TextReference.
+model LegislativeText {
+  id          String              @id @default(cuid())
+  kind        LegislativeTextKind
+  source      String // "assemblee_nationale" | "legifrance"
+  externalId  String              @unique // BILL: Document.uid (=texteLegislatifRef) ; CONSOLIDATED: LEGITEXT/LEGIARTI
+  nature      TextNature? // enum E0 — précis en Phase 2 (dossiersLegislatifs)
+  legislature Int?
+  reference   String? // label humain : "PLFSS 2027", "LFSS 2025", "Code de la sécurité sociale"
+  title       String?
+  version     TextVersion? // stade de navette (E1), depuis Document.provenance
+  // Phase de lecture (préfixe codeActe du dossier législatif : AN1, ANLUNI, AN2, ANNLEC,
+  // ANLDEF, CMP, SN1…) — pilote le régime art. 45 (lien indirect vs entonnoir vs CMP).
+  lectureCode String?
+  content     String? // corps du texte quand disponible (null tant que dépôt textes / DILA absent)
+  dossierRef  String? // regroupe les versions successives d'un même texte (Document.dossierRef)
+
+  // Un BILL renvoie à sa loi de l'année N-1 (LFSS N-1) — lien de confort (le motif IRR LFSS s'appuie dessus).
+  priorYearTextId String?
+  priorYearText   LegislativeText?  @relation("priorYear", fields: [priorYearTextId], references: [id], onDelete: SetNull)
+  priorYearOf     LegislativeText[] @relation("priorYear")
+
+  amendments         Amendment[]
+  references         TextReference[] @relation("billReferences") // en tant que texte citant
+  resolvedReferences TextReference[] @relation("resolvedReferences") // en tant que cible consolidée résolue
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind, nature, legislature])
+  @@index([dossierRef])
+}
+
+// Un renvoi d'un amendement (Phase 1) — ou d'un article de texte (Phase 2+) — vers le droit
+// consolidé / la LFSS antérieure. Capté DÈS MAINTENANT (rien perdu) avant même le harvester DILA :
+// le lien `consolidatedText` reste null tant que le texte cible n'est pas ingéré.
+// `origin` discrimine la stratégie d'extraction (port pluggable) : l'agent LLM viendra en `llm`.
+model TextReference {
+  id String @id @default(cuid())
+
+  // Propriétaire : le renvoi d'un amendement (Phase 1) ou d'un texte/bill (Phase 2+).
+  amendmentId String?
+  amendment   Amendment?       @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
+  billTextId  String?
+  billText    LegislativeText? @relation("billReferences", fields: [billTextId], references: [id], onDelete: Cascade)
+
+  // BRUT — toujours capté
+  rawCitation String // chaîne source : loiReference.codeLoi(+divisionCodeLoi), ou le hit regex/LLM
+  origin      String // "an_loiReference" | "regex_dispositif" | "llm"
+
+  // PARSÉ — best-effort (nullable), miroir de commun.reference_normative
+  texteSource          String? // "code de la sécurité sociale", "LFSS 2025"
+  article              String? // "L. 138-10"
+  typeModification     TextModificationType?
+  identifiantLegi      String? // LEGIARTI/LEGITEXT une fois résolu
+  dateVersionConsultee DateTime? // garde-fou n°3 : le droit bouge pendant la navette
+
+  // Lien nullable vers le texte consolidé résolu (rempli par le harvester DILA)
+  consolidatedTextId String?
+  consolidatedText   LegislativeText? @relation("resolvedReferences", fields: [consolidatedTextId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([amendmentId, origin, rawCitation]) // idempotence des re-runs (renvois d'amendement)
+  @@index([billTextId])
+  @@index([consolidatedTextId])
+}
+
+model Amendment {
+  id               String              @id @default(cuid())
+  source           String              @default("assemblee_nationale")
+  externalId       String              @unique
+  legislature      Int?
+  numero           String?
+  texteRef         String?
+  articleReference String?
+  title            String?
+  content          String
+  exposeSommaire   String?
+  // Cycle de vie AN (données officielles) — sert de corpus labellisé pour la recevabilité
+  etat             String?
+  etatCode         String? // code Eloi : IR, IRR45, IRRAIF, IRRHD… (plus fin que le libellé)
+  sousEtat         String?
+  sousEtatCode     String? // code Eloi du motif fin : IRR38, IRR45, IRRD…
+  sort             String?
+  soumisArticle40  Boolean?
+  dateDepot        DateTime?
+  datePublication  DateTime?
+  dateSort         DateTime?
+  status           AmendmentStatus     @default(PENDING)
+  // Identification étendue (dump AN)
+  numeroRect          String? // "0" = version initiale, sinon nombre de rectifications
+  organeExamen        String? // prefixeOrganeExamen : "CION_LOIS", "AN" (séance)…
+  examenRef           String?
+  amendementParentRef String? // uid du parent quand c'est un sous-amendement
+  // Signataires (référentiels acteurs/organes AN — PAxxxx / POxxxx)
+  auteurType         String?
+  auteurRef          String?
+  groupePolitiqueRef String?
+  cosignataireRefs   String[] @default([])
+  // Où l'amendement frappe : scalaires requêtables + pointeurFragmentTexte complet (JSON)
+  alineaNumero       String?
+  alineaDesignation  String?
+  articleAdditionnel Boolean?
+  pointeurFragment   Json?
+  // Amendement nettoyé complet (@tricoteuses/assemblee) — garantie « rien n'est perdu »
+  raw                Json?
+  // Similarité pgvector — embeddingModel/embeddedAt tracent le modèle utilisé
+  // (backfill idempotent + ré-embedding propre en cas de changement de modèle)
+  embedding        Unsupported("vector(1536)")?
+  embeddingModel   String?
+  embeddedAt       DateTime?
+  // Nature dénormalisée depuis le BILL (lawText.nature) — filtre knn mono-table, sans jointure.
+  nature           TextNature?
+  lawTextId        String?
+  lawText          LegislativeText?    @relation(fields: [lawTextId], references: [id], onDelete: SetNull)
+  references       TextReference[]
+  analyses         AmendmentAnalysis[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([status])
+  @@index([texteRef])
+  @@index([legislature])
+  @@index([nature])
+  @@index([auteurRef]) // page député : « mes amendements »
+}
+
+model AmendmentAnalysis {
+  id           String    @id @default(cuid())
+  amendmentId  String
+  reviewerType String
+  confidence   Float
+  rationale    String // justificatif court (≤ 60 mots) — art. 89 al. 6 RAN
+  tags         String[]
+  // Verdict de l'agent recevabilité (cf. docs/metier/procedure-recevabilite-agent.md)
+  sort         String? // RECEVABLE | IRRECEVABLE
+  motifCode    String? // code Eloi : IRR45, IRRAIF, IRR41…
+  motifLibelle String? // "Cavalier (45)", "Charge"…
+  fondement    String? // "Art. 45 al. 1 C. ; art. 98 al. 6 RAN"
+  fastTrack    Boolean   @default(false) // conclu sans appel LLM
+  model        String? // modèle LLM utilisé (null si fast-track)
+  trace        Json? // entrées de trace G0→G6 (chaque choix est traçable)
+  amendment    Amendment @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now())
+
+  @@index([amendmentId, createdAt])
+}
+
+enum AmendmentStatus {
+  PENDING
+  RECEIVABLE
+  IRRECEIVABLE
+}
+
+enum LegislativeTextKind {
+  BILL // texte en navette (open data AN) — niveau projet
+  CONSOLIDATED // droit en vigueur / LFSS antérieure (Légifrance / DILA) — niveau droit
+}
+
+// Valeurs reprises verbatim de e0_fiche_texte.schema.json (dossier.nature).
+enum TextNature {
+  projet_de_loi
+  proposition_de_loi
+  projet_loi_finances
+  projet_loi_financement_securite_sociale
+  projet_loi_ratification_ordonnance
+  revision_constitutionnelle
+  proposition_loi_organique
+  projet_loi_organique
+}
+
+// Valeurs reprises verbatim de e1_tableau_comparatif.schema.json (version_texte).
+enum TextVersion {
+  texte_initial
+  texte_commission
+  texte_transmis_senat
+  texte_retour_senat
+  texte_cmp
+  lecture_definitive
+}
+
+// Valeurs reprises verbatim de commun.schema.json (reference_normative.type_modification).
+enum TextModificationType {
+  modification
+  creation
+  abrogation
+  ratification
+  codification
+}
+
+// --- Ingestion (harvesters) : suivi des runs pour la page de monitoring ---
+
+model IngestionRun {
+  id            String             @id @default(cuid())
+  ingestor      String
+  trigger       IngestionTrigger
+  status        IngestionRunStatus @default(RUNNING)
+  startedAt     DateTime           @default(now())
+  finishedAt    DateTime?
+  itemsSeen     Int                @default(0)
+  itemsUpserted Int                @default(0)
+  itemsFailed   Int                @default(0)
+  error         String?
+  logs          IngestionLog[]
+
+  @@index([ingestor, startedAt(sort: Desc)])
+}
+
+model IngestionLog {
+  id        String            @id @default(cuid())
+  runId     String
+  run       IngestionRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  level     IngestionLogLevel @default(INFO)
+  message   String
+  createdAt DateTime          @default(now())
+
+  @@index([runId, createdAt])
+}
+
+enum IngestionTrigger {
+  SCHEDULED
+  MANUAL
+}
+
+enum IngestionRunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum IngestionLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
