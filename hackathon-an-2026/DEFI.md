@@ -9,7 +9,7 @@ Le Cockpit de l'instruction des amendements
 Le poste de pilotage qui aide les administrateurs de l'Assemblée à instruire la recevabilité des amendements (art. 40, 41, 38, 45) plus vite, sans jamais leur retirer la décision. Côté député, un pré-contrôle signale le risque d'irrecevabilité dès l'écriture, avant le dépôt.
 
 ### Porteur
-michel-is-coding & co-porteur
+Matthieu Essaïdi & Vivien Sayve
 
 ### Description longue
 **Le problème.** En une seule année parlementaire, **54 603 amendements** ont été déposés à l'Assemblée nationale. Chacun doit être déclaré recevable ou non (articles 40, 41, 38 et 45, lois organiques) avant tout examen, **100 % instruits avant la moindre mise en discussion**, souvent en **moins de 72 heures**. Le nombre d'amendements augmente sans cesse ; les délais, fixés par le droit, ne bougent pas. Demain, l'IA générative permettra à chaque député de produire des amendements presque sans limite : face à cette déferlante, l'administrateur ne tiendra que s'il est armé d'outils à la même hauteur. Ce contrôle repose aujourd'hui sur les seuls administrateurs, experts de la procédure, qui le mènent à la main.
@@ -33,8 +33,8 @@ Stack : Next.js, NestJS, Prisma, PostgreSQL + pgvector, Redis, DSFR ; données o
 ![Le Cockpit - le flux des dossiers](images/cockpit-flux-dossiers.png)
 
 ### Contributeurs
-- michel-is-coding
-- co-porteur
+- Matthieu Essaïdi
+- Vivien Sayve
 
 ### Ressources utilisées
 Cochez les ressources utilisées en remplaçant `[ ]` par `[x]`.
